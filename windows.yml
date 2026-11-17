@@ -1,0 +1,70 @@
+name: Windows exe
+
+# Builds the Rust server for Windows on every push to master, on pull
+# requests, on demand, and when a v* tag is pushed (which also creates a
+# GitHub Release with the zip attached).
+#
+# The zip contains only the exe plus the files needed to fetch the
+# runtime data on first run: README.md, tools/export_onnx.py and
+# scripts/setup-windows.ps1. The ONNX model (~1.2 GB), espeak-ng and
+# the Piper voices are NOT in the repo and NOT in the zip; run
+# scripts/setup-windows.ps1 once after unzipping (see README.md).
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test
+
+      - name: Build release exe
+        run: cargo build --release
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          if (-not (Test-Path target/release/speakmind-server.exe)) {
+            throw "target/release/speakmind-server.exe not found"
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/speakmind-server.exe dist/
+          Copy-Item README.md dist/
+          New-Item -ItemType Directory -Force -Path dist/tools | Out-Null
+          Copy-Item tools/export_onnx.py dist/tools/
+          New-Item -ItemType Directory -Force -Path dist/scripts | Out-Null
+          Copy-Item scripts/setup-windows.ps1 dist/scripts/
+          # Keep the layout the server expects: exe at the top, with
+          # models/, espeak/ and tts/ created next to it by setup-windows.ps1.
+          Compress-Archive -Path dist/* -DestinationPath speakmind-server-windows-x64.zip -Force
+          Get-ChildItem speakmind-server-windows-x64.zip | Select-Object Name, Length
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: speakmind-server-windows-x64
+          path: speakmind-server-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Release zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: speakmind-server-windows-x64.zip
+          generate_release_notes: true
