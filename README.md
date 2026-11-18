@@ -61,20 +61,24 @@ listens on `0.0.0.0:8000`.
   16-bit mono WAV (`audio/wav`). 503 when there is no voice for the language.
 - `POST /chat` takes JSON `{"messages": [{"role": "user", "content": "..."}],
   "language": "en"}` (roles `user` and `assistant`, the last one from the user)
-  and returns `{"reply": "...", "tip": "..." | null}`. `reply` is what the
+  and returns `{"reply": "...", "tip": "..." | null, "task_done": false}`. `reply` is what the
   partner says; `tip` is a short correction in Chinese when the learner made a
   clear mistake. 503 when chat is not set up, 502 when the chat service fails.
+  A level may also send `npc_prompt`, `level_id` and `task`: the persona and
+  the task are merged into the system prompt, and when a task is given the
+  model signals completion with a `[TASK_DONE]` marker that the server strips,
+  reporting it as `task_done: true` instead.
 
 ## AI chat
 
 The server calls an OpenAI-compatible `/chat/completions` endpoint, so the key
-never reaches the app. Set `SPEAKMIND_AI_API_KEY` to use OpenAI, or also set
-`SPEAKMIND_AI_BASE_URL` for another service (DeepSeek, Qwen, a local Ollama at
-`http://localhost:11434/v1`, ...). A local server needs no key.
+never reaches the app. Set `SPEAKMIND_AI_API_KEY` to use Gemini (the default
+model), or also set `SPEAKMIND_AI_BASE_URL` for another service (DeepSeek, Qwen,
+a local Ollama at `http://localhost:11434/v1`, ...). A local server needs no key.
 
 ```powershell
 $env:SPEAKMIND_AI_API_KEY = "sk-..."
-$env:SPEAKMIND_AI_MODEL = "gpt-4o-mini"   # optional
+$env:SPEAKMIND_AI_MODEL = "gemini-3.5-flash-lite"   # optional
 cargo run --release
 ```
 
@@ -90,8 +94,8 @@ Environment variables, all optional:
 | `SPEAKMIND_MODEL` | `facebook/wav2vec2-lv-60-espeak-cv-ft` | Model name reported by `/health` |
 | `SPEAKMIND_TTS_DIR` | `tts` | Directory with the Piper voices |
 | `SPEAKMIND_AI_API_KEY` | none | Key for the chat service; turns chat on |
-| `SPEAKMIND_AI_BASE_URL` | `https://api.openai.com/v1` when a key is set | Chat service address; setting it also turns chat on |
-| `SPEAKMIND_AI_MODEL` | `gpt-4o-mini` | Chat model name |
+| `SPEAKMIND_AI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` when a key is set | Chat service address; setting it also turns chat on |
+| `SPEAKMIND_AI_MODEL` | `gemini-3.5-flash-lite` | Chat model name |
 | `SPEAKMIND_MAX_TTS_CHARS` | `600` | Longest text accepted for speech |
 | `SPEAKMIND_ESPEAK_LIB` | see above | Path of the espeak-ng shared library |
 | `SPEAKMIND_ESPEAK_DATA` | see above | Path of `espeak-ng-data` |

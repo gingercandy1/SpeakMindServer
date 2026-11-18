@@ -229,18 +229,33 @@ async fn speak(
 struct ChatRequest {
     messages: Vec<chat::Message>,
     language: Option<String>,
+    /// Persona for the partner in this level, from the level's npc_prompt.
+    npc_prompt: Option<String>,
+    /// Level the conversation happens in, e.g. "1-3".
+    level_id: Option<String>,
+    /// What the learner has to do in this level; enables task_done.
+    task: Option<String>,
 }
 
 /// JSON `{"messages": [{"role": "user", "content": "..."}], "language": "en"}`,
-/// answered with `{"reply": "...", "tip": "..." | null}`.
+/// answered with `{"reply": "...", "tip": "..." | null, "task_done": false}`.
+/// The request may also carry `npc_prompt`, `level_id` and `task` from a
+/// level: the persona and task are merged into the system prompt, and when
+/// a task is given the model signals completion with a [TASK_DONE] marker
+/// that the server strips, reporting it as `task_done: true` instead.
 async fn converse(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ChatRequest>,
 ) -> Result<Json<chat::Reply>, ApiError> {
     let language = requested_language(request.language.as_deref())?;
+    let context = chat::ChatContext {
+        level_id: request.level_id,
+        npc_prompt: request.npc_prompt,
+        task: request.task,
+    };
     state
         .chat
-        .reply(&state.config, language, &request.messages)
+        .reply(&state.config, language, &request.messages, &context)
         .await
         .map(Json)
         .map_err(|e| match e {
