@@ -103,12 +103,16 @@ impl Config {
             Ok(v) => Some(PathBuf::from(v)),
             Err(_) => Some(PathBuf::from("espeak/espeak-ng-data")).filter(|p| p.is_dir()),
         };
-        // Chat is on when a key is set (OpenAI by default) or an endpoint is
+        // Chat is on when a key is set (Gemini by default) or an endpoint is
         // named (a local server such as Ollama needs no key).
         let non_empty = |name: &str| env::var(name).ok().filter(|v| !v.trim().is_empty());
         let ai_api_key = non_empty("SPEAKMIND_AI_API_KEY");
         let ai_base_url = non_empty("SPEAKMIND_AI_BASE_URL")
-            .or_else(|| ai_api_key.as_ref().map(|_| "https://api.openai.com/v1".to_string()))
+            .or_else(|| {
+                ai_api_key
+                    .as_ref()
+                    .map(|_| "https://generativelanguage.googleapis.com/v1beta/openai".to_string())
+            })
             .map(|url| url.trim().trim_end_matches('/').to_string());
         Ok(Self {
             model_id: var("SPEAKMIND_MODEL", "facebook/wav2vec2-lv-60-espeak-cv-ft".to_string())?,
@@ -125,7 +129,7 @@ impl Config {
             max_tts_chars: var("SPEAKMIND_MAX_TTS_CHARS", 600)?,
             ai_base_url,
             ai_api_key,
-            ai_model: var("SPEAKMIND_AI_MODEL", "gpt-4o-mini".to_string())?,
+            ai_model: var("SPEAKMIND_AI_MODEL", "gemini-3.5-flash-lite".to_string())?,
             good_threshold: var("SPEAKMIND_GOOD_THRESHOLD", 0.7)?,
             fair_threshold: var("SPEAKMIND_FAIR_THRESHOLD", 0.4)?,
             pause_seconds: var("SPEAKMIND_PAUSE_SECONDS", 0.5)?,
