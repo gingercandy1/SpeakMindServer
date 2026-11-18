@@ -6,6 +6,7 @@
 //! - `POST /assess`  score a recording against a sentence (English or Spanish)
 //! - `POST /tts`     speak a text with a Piper voice
 //! - `POST /chat`    one turn of conversation practice with an AI partner
+//! - `POST /history` back up play-history records; `GET /history` fetch them
 
 mod align;
 mod audio;
@@ -13,6 +14,7 @@ mod chat;
 mod config;
 mod frames;
 mod g2p;
+mod history;
 mod model;
 mod scoring;
 mod tts;
@@ -20,8 +22,9 @@ mod tts;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::body::Bytes;
 use axum::extract::multipart::{Multipart, MultipartError, MultipartRejection};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -33,6 +36,7 @@ use crate::audio::AudioError;
 use crate::chat::{Chat, ChatError};
 use crate::config::{Config, Language, DEFAULT_LANGUAGE, LANGUAGES, SAMPLE_RATE};
 use crate::g2p::Phonemizer;
+use crate::history::{check_body_size, validate_upload, HistoryStore, MAX_BODY_BYTES};
 use crate::model::PhonemeModel;
 use crate::scoring::Assessment;
 use crate::tts::{Tts, TtsError};
@@ -43,6 +47,7 @@ struct AppState {
     phonemizer: Phonemizer,
     tts: Tts,
     chat: Chat,
+    history: HistoryStore,
 }
 
 /// An error response: `{"detail": "..."}` with the given status.
@@ -248,6 +253,58 @@ async fn converse(
         })
 }
 
+#[derive(Deserialize)]
+struct HistoryQuery {
+    device_id: Option<String>,
+    limit: Option<usize>,
+}
+
+/// JSON `{"device_id": "...", "records": [...]}`, answered with
+/// `{"accepted": n}`. Records that fail validation are skipped, never fail
+/// the batch; the whole upload fails only when the device_id is missing or
+/// `records` is not an array. File I/O runs off the async worker threads.
+async fn upload_history(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Backstop for the route-level body limit below: the limit is enforced
+    // while collecting the body, and re-checked here on the bytes received.
+    check_body_size(body.len()).map_err(|e| ApiError(StatusCode::PAYLOAD_TOO_LARGE, e))?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("invalid JSON: {e}")))?;
+    let device_id = value.get("device_id").and_then(|v| v.as_str());
+    let records = value.get("records").cloned().unwrap_or(serde_json::Value::Null);
+    let valid = validate_upload(device_id, &records)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+    let store = state.history.clone();
+    let accepted = tokio::task::spawn_blocking(move || store.append(&valid))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(json!({ "accepted": accepted })))
+}
+
+/// `GET /history?device_id=...&limit=100`, answered with
+/// `{"device_id": "...", "records": [...]}` (newest first).
+async fn list_history(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let device_id = query
+        .device_id
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "device_id is required".to_string()))?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let store = state.history.clone();
+    let device_id_for_read = device_id.clone();
+    let records = tokio::task::spawn_blocking(move || store.read(&device_id_for_read, limit))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(json!({ "device_id": device_id, "records": records })))
+}
+
 fn load() -> Result<AppState, String> {
     let config = Config::from_env()?;
     let phonemizer = Phonemizer::new(&config.espeak_lib, config.espeak_data.as_deref())?;
@@ -258,7 +315,18 @@ fn load() -> Result<AppState, String> {
     }
     let model = PhonemeModel::load(&config.model_dir, config.threads)?;
     let tts = Tts::load(&config.tts_dir, model.environment(), config.threads);
-    Ok(AppState { config, model, phonemizer, tts, chat: Chat::new()? })
+    let history_dir = std::env::var("SPEAKMIND_HISTORY_DIR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "data".to_string());
+    Ok(AppState {
+        config,
+        model,
+        phonemizer,
+        tts,
+        chat: Chat::new()?,
+        history: HistoryStore::new(history_dir),
+    })
 }
 
 async fn shutdown_signal() {
@@ -282,6 +350,14 @@ async fn main() {
         .route("/assess", post(assess))
         .route("/tts", post(speak))
         .route("/chat", post(converse))
+        .route("/history", get(list_history))
+        .route(
+            "/history",
+            // History uploads are small JSON batches: cap this route well
+            // below the global upload limit. The handler re-checks the
+            // received bytes, so the cap holds even if a layer is skipped.
+            post(upload_history).layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
         // Room for the text field and the multipart framing around the audio.
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes + 64 * 1024))
         .with_state(state);
