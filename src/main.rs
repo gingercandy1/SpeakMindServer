@@ -297,7 +297,8 @@ async fn list_history(
         .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "device_id is required".to_string()))?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let store = state.history.clone();
-    let records = tokio::task::spawn_blocking(move || store.read(&device_id, limit))
+    let device_id_for_read = device_id.clone();
+    let records = tokio::task::spawn_blocking(move || store.read(&device_id_for_read, limit))
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?
         .map_err(|e| ApiError::internal(e.to_string()))?;
